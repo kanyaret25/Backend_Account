@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>ระบบบัญชีเครดิต</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Sarabun','Noto Sans Thai',sans-serif;background:#f0f2f8;color:#1a1a2e;min-height:100vh}
+    input,select,button,textarea{font-family:inherit}
+    ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+    .tab-bar{display:flex;overflow-x:auto;gap:2px;padding-bottom:0;scrollbar-width:none}
+    .tab-bar::-webkit-scrollbar{display:none}
+    @keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+    .card-anim{animation:slideUp .2s ease}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+    .pulse{animation:pulse 2s infinite}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useMemo,useEffect,useCallback,useRef}=React;
+
+// ── CONSTANTS ──────────────────────────────────────────────
+const CREDIT_TYPES=[
+{value:“bad_debt”,    label:“เครดิตเสีย”,             color:”#ef4444”},
+{value:“loan”,        label:“เครดิตเงินกู้”,           color:”#f97316”},
+{value:“scan_outside”,label:“สแกนของนอกร้าน”,         color:”#8b5cf6”},
+{value:“in_store”,   label:“ซื้อของร้าน (เครดิต)”,    color:”#3b82f6”},
+];
+const MONTHS=[“ม.ค.”,“ก.พ.”,“มี.ค.”,“เม.ย.”,“พ.ค.”,“มิ.ย.”,“ก.ค.”,“ส.ค.”,“ก.ย.”,“ต.ค.”,“พ.ย.”,“ธ.ค.”];
+
+function genId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
+function thDate(iso){if(!iso)return”-”;const[y,m,d]=iso.split(”-”);return`${+d} ${MONTHS[+m-1]} ${+y+543}`}
+function monthKey(iso){return iso?iso.slice(0,7):””}
+function monthLabel(k){if(!k)return””;const[y,m]=k.split(”-”);return`${MONTHS[+m-1]} ${+y+543}`}
+function today(){return new Date().toISOString().slice(0,10)}
+function fmt(n){return Math.round(n).toLocaleString(“th-TH”)}
+
+// ── STORAGE ─────────────────────────────────────────────────
+function save(k,v){try{localStorage.setItem(“cb_”+k,JSON.stringify(v))}catch(*){}}
+function load(k,fb){try{const r=localStorage.getItem(“cb*”+k);return r?JSON.parse(r):fb}catch(_){return fb}}
+
+// ── CALC ────────────────────────────────────────────────────
+// debt fields: principalMom, principalUs, creditPrice, totalInstallments
+// profit split = (creditPrice - principalMom - principalUs) split by ratio momProfitRatio
+function calcSplit(debt){
+const totalPrincipal=(debt.principalMom||0)+(debt.principalUs||0);
+const totalProfit=debt.creditPrice-totalPrincipal;
+const profitMom=totalProfit*(debt.momProfitRatio||0.5);
+const profitUs=totalProfit*(1-(debt.momProfitRatio||0.5));
+return{totalPrincipal,totalProfit,profitMom,profitUs,
+momRatio:(debt.principalMom||0)/debt.creditPrice,
+usRatio:(debt.principalUs||0)/debt.creditPrice,
+momProfitRatio:profitMom/debt.creditPrice,
+usProfitRatio:profitUs/debt.creditPrice};
+}
+
+// ── SMALL UI ────────────────────────────────────────────────
+const iStyle={width:“100%”,padding:“8px 10px”,border:“1.5px solid #e2e8f0”,
+borderRadius:8,fontSize:14,outline:“none”,background:”#fff”};
+
+function Tag({type}){
+const t=CREDIT_TYPES.find(x=>x.value===type)||{label:type,color:”#888”};
+return<span style={{background:t.color+“22”,color:t.color,border:`1px solid ${t.color}44`,
+borderRadius:6,padding:“2px 8px”,fontSize:11,fontWeight:700,whiteSpace:“nowrap”}}>{t.label}</span>;
+}
+
+function Modal({title,onClose,children,wide}){
+return(
+<div style={{position:“fixed”,inset:0,background:”#000a”,zIndex:1000,display:“flex”,
+alignItems:“center”,justifyContent:“center”,padding:12}} onClick={onClose}>
+<div style={{background:”#fff”,borderRadius:16,width:“100%”,maxWidth:wide?560:460,
+maxHeight:“92vh”,overflowY:“auto”,boxShadow:“0 12px 48px #0005”}}
+onClick={e=>e.stopPropagation()}>
+<div style={{display:“flex”,alignItems:“center”,justifyContent:“space-between”,
+padding:“16px 20px 12px”,borderBottom:“1px solid #f0f4f8”,position:“sticky”,top:0,background:”#fff”,zIndex:1}}>
+<span style={{fontWeight:800,fontSize:15,color:”#1a1a2e”}}>{title}</span>
+<button onClick={onClose} style={{background:”#f1f5f9”,border:“none”,width:28,height:28,
+borderRadius:8,fontSize:16,cursor:“pointer”,color:”#64748b”}}>✕</button>
+</div>
+<div style={{padding:“14px 20px 20px”}}>{children}</div>
+</div>
+</div>
+);
+}
+
+function Row({label,children,required}){
+return(
+<div style={{marginBottom:11}}>
+<label style={{display:“block”,fontSize:12,color:”#64748b”,marginBottom:3,fontWeight:600}}>
+{label}{required&&<span style={{color:”#ef4444”}}> *</span>}
+</label>
+{children}
+</div>
+);
+}
+
+function Btn({onClick,color=”#1a1a2e”,children,small,full,outline}){
+return(
+<button onClick={onClick} style={{
+background:outline?“transparent”:color,
+color:outline?color:”#fff”,
+border:outline?`2px solid ${color}`:“none”,
+borderRadius:9,padding:small?“5px 10px”:“10px 16px”,
+fontSize:small?12:14,fontWeight:700,cursor:“pointer”,
+width:full?“100%”:“auto”,whiteSpace:“nowrap”}}>
+{children}
+</button>
+);
+}
+
+function MCard({label,value,sub,color=”#3b82f6”}){
+return(
+<div style={{background:color+“0f”,borderRadius:10,padding:“10px 12px”,border:`1px solid ${color}25`}}>
+<div style={{fontSize:10,color:”#94a3b8”,marginBottom:2}}>{label}</div>
+<div style={{fontSize:16,fontWeight:800,color}}>{value}</div>
+{sub&&<div style={{fontSize:10,color:”#94a3b8”,marginTop:1}}>{sub}</div>}
+</div>
+);
+}
+
+function BigCard({label,value,sub,color}){
+return(
+<div style={{background:”#fff”,borderRadius:12,padding:“14px 16px”,boxShadow:“0 1px 6px #0001”}}>
+<div style={{fontSize:11,color:”#94a3b8”,marginBottom:3}}>{label}</div>
+<div style={{fontSize:22,fontWeight:900,color}}>{value}</div>
+{sub&&<div style={{fontSize:11,color:”#94a3b8”,marginTop:2}}>{sub}</div>}
+</div>
+);
+}
+
+function ProgressBar({pct,color=“linear-gradient(90deg,#3b82f6,#06b6d4)”}){
+return(
+<div style={{background:”#e2e8f0”,borderRadius:6,height:7,overflow:“hidden”}}>
+<div style={{background:color,width:`${Math.min(100,pct)}%`,height:“100%”,borderRadius:6,
+transition:“width .4s”}}/>
+</div>
+);
+}
+
+// ── MAIN APP ────────────────────────────────────────────────
+function App(){
+const [tab,setTab]=useState(“dashboard”);
+const [customers,setCustomers]=useState(()=>load(“customers”,[]));
+const [debts,setDebts]=useState(()=>load(“debts”,[]));
+const [payments,setPayments]=useState(()=>load(“payments”,[]));
+
+// modals
+const [modal,setModal]=useState(null); // {type, data}
+const closeModal=()=>setModal(null);
+
+// search
+const [search,setSearch]=useState(””);
+
+// notification seen
+const [notiSeen,setNotiSeen]=useState(false);
+
+// auto-save
+useEffect(()=>{save(“customers”,customers)},[customers]);
+useEffect(()=>{save(“debts”,debts)},[debts]);
+useEffect(()=>{save(“payments”,payments)},[payments]);
+
+// ── derived maps ──
+const custMap=useMemo(()=>Object.fromEntries(customers.map(c=>[c.id,c])),[customers]);
+const debtMap=useMemo(()=>Object.fromEntries(debts.map(d=>[d.id,d])),[debts]);
+
+// ── debt stats ──
+const stats=useMemo(()=>{
+const s={};
+debts.forEach(d=>{
+const sp=calcSplit(d);
+const ps=payments.filter(p=>p.debtId===d.id);
+const totalPaid=ps.reduce((a,p)=>a+p.amount,0);
+const remaining=Math.max(0,d.creditPrice-totalPaid);
+// allocate payments proportionally
+const momCapReturned=totalPaid*sp.momRatio;
+const usCapReturned=totalPaid*sp.usRatio;
+const momProfitEarned=totalPaid*sp.momProfitRatio;
+const usProfitEarned=totalPaid*sp.usProfitRatio;
+s[d.id]={…sp,totalPaid,remaining,momCapReturned,usCapReturned,momProfitEarned,usProfitEarned,
+installAmt:d.creditPrice/d.totalInstallments,payments:ps};
+});
+return s;
+},[debts,payments]);
+
+// ── today’s due ──
+const todayDue=useMemo(()=>{
+const todayStr=today();
+return debts.filter(d=>{
+if(!d.startDate)return false;
+const s=stats[d.id];
+if(s.remaining<=0)return false;
+// check if any installment falls today
+const start=new Date(d.startDate);
+const dayOfMonth=start.getDate();
+const t=new Date(todayStr);
+return t.getDate()===dayOfMonth;
+});
+},[debts,stats]);
+
+// ── monthly summary ──
+const monthly=useMemo(()=>{
+const map={};
+payments.forEach(p=>{
+const d=debtMap[p.debtId];if(!d)return;
+const sp=calcSplit(d);
+const mk=monthKey(p.date);
+if(!map[mk])map[mk]={income:0,momCap:0,usCap:0,momProfit:0,usProfit:0,count:0};
+map[mk].income+=p.amount;
+map[mk].momCap+=p.amount*sp.momRatio;
+map[mk].usCap+=p.amount*sp.usRatio;
+map[mk].momProfit+=p.amount*sp.momProfitRatio;
+map[mk].usProfit+=p.amount*sp.usProfitRatio;
+map[mk].count++;
+});
+return Object.entries(map).sort((a,b)=>b[0].localeCompare(a[0])).map(([k,v])=>({key:k,label:monthLabel(k),…v}));
+},[payments,debtMap]);
+
+// ── totals ──
+const totals=useMemo(()=>{
+let momCap=0,usCap=0,momProfit=0,usProfit=0,outstanding=0,totalOut=0;
+debts.forEach(d=>{
+momCap+=d.principalMom||0;
+usCap+=d.principalUs||0;
+totalOut+=d.creditPrice;
+outstanding+=stats[d.id]?.remaining||0;
+});
+Object.values(stats).forEach(s=>{
+momProfit+=s.momProfitEarned;
+usProfit+=s.usProfitEarned;
+});
+return{momCap,usCap,momProfit,usProfit,outstanding,totalOut,
+totalCap:momCap+usCap,totalCapReturned:Object.values(stats).reduce((a,s)=>a+s.momCapReturned+s.usCapReturned,0)};
+},[debts,stats]);
+
+// ── safe lending analysis ──
+const analysis=useMemo(()=>{
+const avgMonthlyIncome=monthly.length>0?monthly.reduce((a,m)=>a+m.income,0)/monthly.length:0;
+const usCapNet=totals.usCap-Object.values(stats).reduce((a,s)=>a+s.usCapReturned,0);
+const safeNewLend=Math.max(0,avgMonthlyIncome*0.7-usCapNet*0.1);
+return{avgMonthlyIncome,usCapNet,safeNewLend};
+},[monthly,totals,stats]);
+
+// ── by credit type summary ──
+const byType=useMemo(()=>{
+const m={};
+CREDIT_TYPES.forEach(ct=>{m[ct.value]={count:0,totalCredit:0,outstanding:0,momCap:0,usCap:0,momProfit:0,usProfit:0}});
+debts.forEach(d=>{
+const t=m[d.creditType];if(!t)return;
+const s=stats[d.id];
+t.count++;t.totalCredit+=d.creditPrice;t.outstanding+=s.remaining;
+t.momCap+=d.principalMom||0;t.usCap+=d.principalUs||0;
+t.momProfit+=s.momProfitEarned;t.usProfit+=s.usProfitEarned;
+});
+return m;
+},[debts,stats]);
+
+// ── filtered customers ──
+const filteredCustomers=useMemo(()=>{
+const q=search.toLowerCase();
+return customers.filter(c=>c.name.toLowerCase().includes(q)||c.phone?.includes(q));
+},[customers,search]);
+
+const filteredDebts=useMemo(()=>{
+const q=search.toLowerCase();
+return debts.filter(d=>{
+const c=custMap[d.customerId];
+return(c?.name||””).toLowerCase().includes(q)||(d.note||””).toLowerCase().includes(q);
+});
+},[debts,search,custMap]);
+
+// ── handlers ──
+function addCustomer(form){
+setCustomers(p=>[…p,{id:genId(),…form}]);
+closeModal();
+}
+
+function addDebt(form){
+setDebts(p=>[…p,{id:genId(),…form,
+principalMom:+form.principalMom,principalUs:+form.principalUs,
+creditPrice:+form.creditPrice,totalInstallments:+form.totalInstallments,
+momProfitRatio:+form.momProfitRatio}]);
+closeModal();
+}
+
+function updateDebt(id,form){
+setDebts(p=>p.map(d=>d.id===id?{…d,…form,
+principalMom:+form.principalMom,principalUs:+form.principalUs,
+creditPrice:+form.creditPrice,totalInstallments:+form.totalInstallments,
+momProfitRatio:+form.momProfitRatio}:d));
+closeModal();
+}
+
+function addPayment(form){
+setPayments(p=>[…p,{id:genId(),…form,amount:+form.amount}]);
+closeModal();
+}
+
+function updatePayment(id,form){
+setPayments(p=>p.map(x=>x.id===id?{…x,…form,amount:+form.amount}:x));
+closeModal();
+}
+
+function deletePayment(id){
+setPayments(p=>p.filter(x=>x.id!==id));
+}
+
+function deleteCustomer(id){
+const dids=debts.filter(d=>d.customerId===id).map(d=>d.id);
+setPayments(p=>p.filter(x=>!dids.includes(x.debtId)));
+setDebts(p=>p.filter(d=>d.customerId!==id));
+setCustomers(p=>p.filter(c=>c.id!==id));
+closeModal();
+}
+
+function deleteDebt(id){
+setPayments(p=>p.filter(x=>x.debtId!==id));
+setDebts(p=>p.filter(d=>d.id!==id));
+closeModal();
+}
+
+function exportData(){
+const blob=new Blob([JSON.stringify({customers,debts,payments,v:2},null,2)],{type:“application/json”});
+const a=document.createElement(“a”);a.href=URL.createObjectURL(blob);
+a.download=`บัญชีเครดิต_${today()}.json`;a.click();
+}
+
+function importData(e){
+const f=e.target.files[0];if(!f)return;
+const r=new FileReader();
+r.onload=ev=>{
+try{
+const d=JSON.parse(ev.target.result);
+if(d.customers)setCustomers(d.customers);
+if(d.debts)setDebts(d.debts);
+if(d.payments)setPayments(d.payments);
+alert(“นำเข้าสำเร็จ ✅”);
+}catch{alert(“ไฟล์ไม่ถูกต้อง”);}
+};r.readAsText(f);e.target.value=””;
+}
+
+const tabs=[
+{key:“dashboard”,icon:“📊”,label:“ภาพรวม”},
+{key:“alert”,   icon:“🔔”,label:“แจ้งเตือน”},
+{key:“monthly”, icon:“📅”,label:“รายเดือน”},
+{key:“debts”,   icon:“📋”,label:“ลูกหนี้”},
+{key:“customers”,icon:“👤”,label:“ลูกค้า”},
+{key:“summary”, icon:“📈”,label:“สรุปเครดิต”},
+];
+
+return(
+<div style={{minHeight:“100vh”,paddingBottom:20}}>
+{/* ── HEADER ── */}
+<div style={{background:“linear-gradient(135deg,#0f172a,#1e293b)”,color:”#fff”,padding:“16px 16px 0”}}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“flex-start”,marginBottom:12}}>
+<div>
+<div style={{fontSize:18,fontWeight:900,letterSpacing:.3}}>💰 ระบบบัญชีเครดิต</div>
+<div style={{fontSize:11,color:”#94a3b8”,marginTop:1}}>แยกทุน–กำไร แม่/เรา ชัดเจนทุกบาท</div>
+</div>
+<div style={{display:“flex”,gap:6,alignItems:“center”}}>
+<label style={{background:”#ffffff18”,color:”#fff”,border:“1px solid #ffffff30”,
+borderRadius:7,padding:“5px 9px”,fontSize:11,fontWeight:600,cursor:“pointer”}}>
+📂<input type=“file” accept=”.json” onChange={importData} style={{display:“none”}}/>
+</label>
+<button onClick={exportData} style={{background:”#ffffff18”,color:”#fff”,
+border:“1px solid #ffffff30”,borderRadius:7,padding:“5px 9px”,fontSize:11,fontWeight:600,cursor:“pointer”}}>
+💾
+</button>
+</div>
+</div>
+<div className="tab-bar">
+{tabs.map(t=>(
+<button key={t.key} onClick={()=>{setTab(t.key);setNotiSeen(t.key===“alert”?true:notiSeen)}}
+style={{background:tab===t.key?”#fff”:“transparent”,
+color:tab===t.key?”#0f172a”:”#94a3b8”,
+border:“none”,borderRadius:“8px 8px 0 0”,padding:“8px 12px”,
+fontSize:11,fontWeight:tab===t.key?800:500,cursor:“pointer”,
+whiteSpace:“nowrap”,position:“relative”}}>
+{t.icon} {t.label}
+{t.key===“alert”&&todayDue.length>0&&!notiSeen&&(
+<span style={{position:“absolute”,top:4,right:4,background:”#ef4444”,color:”#fff”,
+borderRadius:“50%”,width:14,height:14,fontSize:9,display:“flex”,alignItems:“center”,
+justifyContent:“center”,fontWeight:700}}>{todayDue.length}</span>
+)}
+</button>
+))}
+</div>
+</div>
+
+```
+  {/* ── SEARCH BAR ── */}
+  {(tab==="debts"||tab==="customers")&&(
+    <div style={{padding:"10px 14px 0"}}>
+      <input value={search} onChange={e=>setSearch(e.target.value)}
+        placeholder="🔍 ค้นหาชื่อลูกค้า / เบอร์โทร..."
+        style={{...iStyle,background:"#fff",boxShadow:"0 1px 4px #0001"}}/>
+    </div>
+  )}
+
+  <div style={{padding:"12px 14px",maxWidth:720,margin:"0 auto"}}>
+
+    {/* ════ DASHBOARD ════ */}
+    {tab==="dashboard"&&(
+      <div className="card-anim">
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+          <BigCard label="💸 ทุนแม่ทั้งหมด"  value={`฿${fmt(totals.momCap)}`}  color="#8b5cf6"/>
+          <BigCard label="💸 ทุนเราทั้งหมด"  value={`฿${fmt(totals.usCap)}`}   color="#3b82f6"/>
+          <BigCard label="🟢 กำไรแม่สะสม"    value={`฿${fmt(totals.momProfit)}`} color="#a855f7"/>
+          <BigCard label="🟢 กำไรเราสะสม"    value={`฿${fmt(totals.usProfit)}`}  color="#10b981"/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+          <BigCard label="⏳ ยอดค้างรับรวม" value={`฿${fmt(totals.outstanding)}`} color="#ef4444"/>
+          <BigCard label="🔄 ทุนรวมที่ปล่อย" value={`฿${fmt(totals.totalCap)}`}  color="#f59e0b"/>
+        </div>
+
+        {/* ── safe lending box ── */}
+        <div style={{background:"#fff",borderRadius:14,padding:16,marginBottom:10,boxShadow:"0 1px 6px #0001"}}>
+          <div style={{fontWeight:800,fontSize:14,marginBottom:10}}>🧮 วิเคราะห์การปล่อยสินเชื่อ</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+            <MCard label="รายรับเฉลี่ย/เดือน" value={`฿${fmt(analysis.avgMonthlyIncome)}`} color="#3b82f6"/>
+            <MCard label="ทุนเราสุทธิที่ค้างอยู่" value={`฿${fmt(analysis.usCapNet)}`} color="#f97316"/>
+          </div>
+          <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:10,padding:12}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#166534",marginBottom:4}}>
+              ✅ ควรปล่อยสินเชื่อใหม่ได้ไม่เกิน
+            </div>
+            <div style={{fontSize:26,fontWeight:900,color:"#15803d"}}>฿{fmt(analysis.safeNewLend)}</div>
+            <div style={{fontSize:11,color:"#4ade80",marginTop:4}}>
+              คำนวณจาก: รายรับเฉลี่ย×70% − ทุนค้าง×10% เพื่อคงสภาพคล่อง
+            </div>
+          </div>
+          {monthly.length===0&&(
+            <div style={{fontSize:12,color:"#94a3b8",marginTop:8,textAlign:"center"}}>
+              ยังไม่มีประวัติรับเงิน — บันทึกการชำระก่อนเพื่อให้ระบบวิเคราะห์ได้
+            </div>
+          )}
+        </div>
+
+        <div style={{background:"#fff",borderRadius:14,padding:14,boxShadow:"0 1px 6px #0001"}}>
+          <div style={{fontWeight:800,fontSize:13,marginBottom:8}}>📌 คู่มืออ่านตัวเลข</div>
+          {[["ทุนแม่","เงินต้นที่แม่ออก — ต้องคืนแม่"],
+            ["ทุนเรา","เงินต้นที่เราออก — ทุนหมุนเวียนเรา"],
+            ["กำไรแม่","ส่วนแบ่งกำไรของแม่ตามสัดส่วนที่ตกลง"],
+            ["กำไรเรา","ส่วนแบ่งกำไรของเรา — รายได้จริง"]
+          ].map(([k,v])=>(
+            <div key={k} style={{display:"flex",gap:8,marginBottom:5,fontSize:12}}>
+              <span style={{color:"#6366f1",fontWeight:700,minWidth:80}}>{k}</span>
+              <span style={{color:"#64748b"}}>{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
+    {/* ════ ALERT ════ */}
+    {tab==="alert"&&(
+      <div className="card-anim">
+        <div style={{fontWeight:800,fontSize:15,margin:"0 0 12px"}}>🔔 แจ้งเตือนวันนี้ — {thDate(today())}</div>
+        {todayDue.length===0?(
+          <div style={{background:"#fff",borderRadius:14,padding:32,textAlign:"center",
+              boxShadow:"0 1px 6px #0001",color:"#94a3b8",fontSize:14}}>
+            ✅ ไม่มีลูกหนี้ครบชำระวันนี้
+          </div>
+        ):todayDue.map(d=>{
+          const s=stats[d.id];
+          const c=custMap[d.customerId];
+          return(
+            <div key={d.id} className="card-anim" style={{background:"#fff",borderRadius:14,
+                padding:14,marginBottom:10,boxShadow:"0 1px 6px #0001",
+                borderLeft:"4px solid #f59e0b"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div>
+                  <div style={{fontWeight:800,fontSize:14}}>{c?.name||"ไม่ระบุ"}</div>
+                  <div style={{fontSize:12,color:"#64748b",marginTop:2}}>{c?.phone}</div>
+                  <div style={{marginTop:4}}><Tag type={d.creditType}/></div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:11,color:"#94a3b8"}}>งวดที่ควรชำระ</div>
+                  <div style={{fontSize:20,fontWeight:900,color:"#f59e0b"}}>฿{fmt(s.installAmt)}</div>
+                  <div style={{fontSize:11,color:"#ef4444"}}>ค้าง ฿{fmt(s.remaining)}</div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,
+            padding:12,marginTop:8,fontSize:12,color:"#1e40af"}}>
+          💡 ระบบเช็คโดยใช้วันที่เริ่มสัญญา — ลูกหนี้ที่เริ่มวันที่ <strong>X</strong> ของเดือนจะโผล่แจ้งเตือนทุกวันที่ <strong>X</strong>
+        </div>
+      </div>
+    )}
+
+    {/* ════ MONTHLY ════ */}
+    {tab==="monthly"&&(
+      <div className="card-anim">
+        <div style={{fontWeight:800,fontSize:15,margin:"0 0 12px"}}>📅 สรุปรายเดือน</div>
+        {monthly.length===0&&<div style={{textAlign:"center",color:"#94a3b8",padding:40}}>ยังไม่มีข้อมูลการรับเงิน</div>}
+        {monthly.map(m=>(
+          <div key={m.key} style={{background:"#fff",borderRadius:14,padding:14,marginBottom:10,boxShadow:"0 1px 6px #0001"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <span style={{fontWeight:800,fontSize:15}}>{m.label}</span>
+              <span style={{fontWeight:900,fontSize:16,color:"#0f172a"}}>฿{fmt(m.income)}</span>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
+              <MCard label="💜 ทุนแม่คืน"  value={`฿${fmt(m.momCap)}`}    color="#8b5cf6"/>
+              <MCard label="🔵 ทุนเราคืน"  value={`฿${fmt(m.usCap)}`}    color="#3b82f6"/>
+              <MCard label="💜 กำไรแม่"    value={`฿${fmt(m.momProfit)}`} color="#a855f7"/>
+              <MCard label="🟢 กำไรเรา"    value={`฿${fmt(m.usProfit)}`}  color="#10b981"/>
+            </div>
+            <div style={{fontSize:11,color:"#94a3b8",textAlign:"right"}}>{m.count} รายการ</div>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {/* ════ DEBTS ════ */}
+    {tab==="debts"&&(
+      <div className="card-anim">
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"0 0 12px"}}>
+          <span style={{fontWeight:800,fontSize:15}}>📋 บัญชีลูกหนี้ ({filteredDebts.length})</span>
+          <Btn small onClick={()=>setModal({type:"addDebt"})}>+ เพิ่มบัญชี</Btn>
+        </div>
+        {filteredDebts.length===0&&<div style={{textAlign:"center",color:"#94a3b8",padding:40}}>ไม่พบข้อมูล</div>}
+        {filteredDebts.map(d=>{
+          const s=stats[d.id];
+          const c=custMap[d.customerId];
+          const pct=d.creditPrice>0?Math.min(100,(s.totalPaid/d.creditPrice)*100):0;
+          return(
+            <div key={d.id} style={{background:"#fff",borderRadius:14,padding:14,marginBottom:10,
+                boxShadow:"0 1px 6px #0001"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+                <div>
+                  <div style={{fontWeight:800,fontSize:14}}>{c?.name||"ไม่ระบุ"}</div>
+                  <div style={{marginTop:3,display:"flex",gap:4,flexWrap:"wrap"}}><Tag type={d.creditType}/></div>
+                  {d.note&&<div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>{d.note}</div>}
+                </div>
+                <div style={{textAlign:"right",flexShrink:0,marginLeft:8}}>
+                  <div style={{fontSize:13,fontWeight:800,color:s.remaining>0?"#ef4444":"#10b981"}}>
+                    {s.remaining>0?`ค้าง ฿${fmt(s.remaining)}`:"✅ ครบ"}
+                  </div>
+                  <div style={{fontSize:11,color:"#94a3b8"}}>จาก ฿{fmt(d.creditPrice)}</div>
+                </div>
+              </div>
+              <ProgressBar pct={pct}/>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#94a3b8",marginTop:3,marginBottom:10}}>
+                <span>ชำระแล้ว {Math.round(pct)}%</span>
+                <span>งวดละ ฿{fmt(s.installAmt)} × {d.totalInstallments}</span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5,marginBottom:10}}>
+                <MCard label="ทุนแม่" value={`฿${fmt(d.principalMom||0)}`} color="#8b5cf6"/>
+                <MCard label="ทุนเรา" value={`฿${fmt(d.principalUs||0)}`}  color="#3b82f6"/>
+                <MCard label="กำไรแม่" value={`฿${fmt(s.momProfitEarned)}`} color="#a855f7"/>
+                <MCard label="กำไรเรา" value={`฿${fmt(s.usProfitEarned)}`}  color="#10b981"/>
+              </div>
+
+              {/* payments list */}
+              {s.payments.length>0&&(
+                <div style={{borderTop:"1px solid #f1f5f9",paddingTop:8,marginBottom:8}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#64748b",marginBottom:4}}>ประวัติการชำระ</div>
+                  {s.payments.map(p=>{
+                    const sp=calcSplit(d);
+                    return(
+                      <div key={p.id} style={{display:"flex",justifyContent:"space-between",
+                          alignItems:"center",fontSize:11,padding:"4px 0",borderBottom:"1px solid #f8fafc"}}>
+                        <span style={{color:"#64748b"}}>{thDate(p.date)} {p.note&&`· ${p.note}`}</span>
+                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                          <span style={{fontWeight:700}}>฿{fmt(p.amount)}</span>
+                          <button onClick={()=>setModal({type:"editPayment",data:{payment:p,debt:d}})}
+                            style={{background:"#f1f5f9",border:"none",borderRadius:5,
+                              padding:"2px 7px",fontSize:10,cursor:"pointer",color:"#64748b"}}>แก้ไข</button>
+                          <button onClick={()=>{if(confirm("ลบรายการนี้?"))deletePayment(p.id)}}
+                            style={{background:"#fee2e2",border:"none",borderRadius:5,
+                              padding:"2px 7px",fontSize:10,cursor:"pointer",color:"#ef4444"}}>ลบ</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <Btn small color="#10b981" onClick={()=>setModal({type:"addPayment",data:d})}>+ รับเงิน</Btn>
+                <Btn small color="#6366f1" outline onClick={()=>setModal({type:"editDebt",data:d})}>แก้ไขบัญชี</Btn>
+                <Btn small color="#ef4444" outline onClick={()=>{if(confirm("ลบบัญชีนี้ทั้งหมด?"))deleteDebt(d.id)}}>ลบ</Btn>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    )}
+
+    {/* ════ CUSTOMERS ════ */}
+    {tab==="customers"&&(
+      <div className="card-anim">
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"0 0 12px"}}>
+          <span style={{fontWeight:800,fontSize:15}}>👤 ลูกค้า ({filteredCustomers.length})</span>
+          <Btn small onClick={()=>setModal({type:"addCustomer"})}>+ เพิ่มลูกค้า</Btn>
+        </div>
+        {filteredCustomers.length===0&&<div style={{textAlign:"center",color:"#94a3b8",padding:40}}>ไม่พบข้อมูล</div>}
+        {filteredCustomers.map(c=>{
+          const cDebts=debts.filter(d=>d.customerId===c.id);
+          const outstanding=cDebts.reduce((a,d)=>a+stats[d.id].remaining,0);
+          const [expanded,setExpanded]=useState(false);
+          return(
+            <div key={c.id} style={{background:"#fff",borderRadius:14,padding:14,marginBottom:10,
+                boxShadow:"0 1px 6px #0001"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                  cursor:"pointer"}} onClick={()=>setExpanded(x=>!x)}>
+                <div>
+                  <div style={{fontWeight:800,fontSize:14}}>{c.name}</div>
+                  <div style={{fontSize:12,color:"#94a3b8"}}>{c.phone} · {cDebts.length} บัญชี</div>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:13,fontWeight:800,color:outstanding>0?"#ef4444":"#10b981"}}>
+                      {outstanding>0?`ค้าง ฿${fmt(outstanding)}`:"✅ ครบ"}
+                    </div>
+                  </div>
+                  <span style={{color:"#94a3b8",fontSize:16}}>{expanded?"▲":"▼"}</span>
+                </div>
+              </div>
+
+              {expanded&&(
+                <div style={{marginTop:10,borderTop:"1px solid #f1f5f9",paddingTop:10}}>
+                  {cDebts.length===0&&<div style={{color:"#94a3b8",fontSize:12}}>ยังไม่มีบัญชีเครดิต</div>}
+                  {cDebts.map(d=>{
+                    const s=stats[d.id];
+                    const pct=d.creditPrice>0?Math.min(100,(s.totalPaid/d.creditPrice)*100):0;
+                    return(
+                      <div key={d.id} style={{background:"#f8fafc",borderRadius:10,padding:10,marginBottom:8}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                          <Tag type={d.creditType}/>
+                          <span style={{fontSize:12,fontWeight:700,color:s.remaining>0?"#ef4444":"#10b981"}}>
+                            {s.remaining>0?`ค้าง ฿${fmt(s.remaining)}`:"✅ ครบ"}
+                          </span>
+                        </div>
+                        <ProgressBar pct={pct}/>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginTop:6}}>
+                          <MCard label="ทุนแม่" value={`฿${fmt(d.principalMom||0)}`} color="#8b5cf6"/>
+                          <MCard label="ทุนเรา" value={`฿${fmt(d.principalUs||0)}`}  color="#3b82f6"/>
+                          <MCard label="กำไรแม่" value={`฿${fmt(s.momProfitEarned)}`} color="#a855f7"/>
+                          <MCard label="กำไรเรา" value={`฿${fmt(s.usProfitEarned)}`}  color="#10b981"/>
+                        </div>
+                        {d.note&&<div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>{d.note}</div>}
+                      </div>
+                    );
+                  })}
+                  <div style={{display:"flex",gap:6,marginTop:4}}>
+                    <Btn small color="#6366f1" onClick={()=>setModal({type:"editCustomer",data:c})}>แก้ไข</Btn>
+                    <Btn small color="#ef4444" outline onClick={()=>setModal({type:"deleteCustomer",data:c})}>ลบ</Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    )}
+
+    {/* ════ SUMMARY BY TYPE ════ */}
+    {tab==="summary"&&(
+      <div className="card-anim">
+        <div style={{fontWeight:800,fontSize:15,margin:"0 0 12px"}}>📈 สรุปแยกตามประเภทเครดิต</div>
+        {CREDIT_TYPES.map(ct=>{
+          const bt=byType[ct.value];
+          if(bt.count===0)return null;
+          const paidPct=bt.totalCredit>0?((bt.totalCredit-bt.outstanding)/bt.totalCredit)*100:0;
+          return(
+            <div key={ct.value} style={{background:"#fff",borderRadius:14,padding:14,marginBottom:10,
+                boxShadow:"0 1px 6px #0001",borderLeft:`4px solid ${ct.color}`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <div>
+                  <Tag type={ct.value}/>
+                  <span style={{fontSize:12,color:"#94a3b8",marginLeft:8}}>{bt.count} บัญชี</span>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:13,fontWeight:800,color:"#ef4444"}}>ค้าง ฿{fmt(bt.outstanding)}</div>
+                  <div style={{fontSize:11,color:"#94a3b8"}}>จาก ฿{fmt(bt.totalCredit)}</div>
+                </div>
+              </div>
+              <ProgressBar pct={paidPct} color={`linear-gradient(90deg,${ct.color},${ct.color}99)`}/>
+              <div style={{fontSize:11,color:"#94a3b8",textAlign:"right",marginTop:3,marginBottom:8}}>
+                ชำระแล้ว {Math.round(paidPct)}%
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5}}>
+                <MCard label="ทุนแม่"  value={`฿${fmt(bt.momCap)}`}    color="#8b5cf6"/>
+                <MCard label="ทุนเรา"  value={`฿${fmt(bt.usCap)}`}    color="#3b82f6"/>
+                <MCard label="กำไรแม่" value={`฿${fmt(bt.momProfit)}`} color="#a855f7"/>
+                <MCard label="กำไรเรา" value={`฿${fmt(bt.usProfit)}`}  color="#10b981"/>
+              </div>
+            </div>
+          );
+        })}
+        {Object.values(byType).every(b=>b.count===0)&&(
+          <div style={{textAlign:"center",color:"#94a3b8",padding:40}}>ยังไม่มีข้อมูล</div>
+        )}
+      </div>
+    )}
+  </div>
+
+  {/* ════ MODALS ════ */}
+  {modal?.type==="addCustomer"&&<AddCustomerModal onSave={addCustomer} onClose={closeModal}/>}
+  {modal?.type==="editCustomer"&&<AddCustomerModal data={modal.data} onSave={f=>{setCustomers(p=>p.map(c=>c.id===modal.data.id?{...c,...f}:c));closeModal()}} onClose={closeModal}/>}
+  {modal?.type==="deleteCustomer"&&(
+    <Modal title="⚠️ ยืนยันลบลูกค้า" onClose={closeModal}>
+      <div style={{textAlign:"center",padding:"8px 0"}}>
+        <div style={{fontSize:36,marginBottom:8}}>🗑️</div>
+        <div style={{fontWeight:800,fontSize:15,marginBottom:6}}>{modal.data.name}</div>
+        {(()=>{
+          const cDebts=debts.filter(d=>d.customerId===modal.data.id);
+          const out=cDebts.reduce((a,d)=>a+stats[d.id].remaining,0);
+          return out>0&&<div style={{background:"#fef9c3",border:"1px solid #fde047",borderRadius:8,
+              padding:"8px 12px",fontSize:13,color:"#854d0e",marginBottom:10}}>
+            ⚠️ ยังค้างชำระ ฿{fmt(out)}
+          </div>;
+        })()}
+        <div style={{fontSize:13,color:"#64748b",marginBottom:14}}>
+          จะลบบัญชีและประวัติทั้งหมด ไม่สามารถกู้คืนได้
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <Btn full color="#94a3b8" onClick={closeModal}>ยกเลิก</Btn>
+          <Btn full color="#ef4444" onClick={()=>deleteCustomer(modal.data.id)}>ลบถาวร</Btn>
+        </div>
+      </div>
+    </Modal>
+  )}
+  {modal?.type==="addDebt"&&<DebtModal customers={customers} onSave={addDebt} onClose={closeModal}/>}
+  {modal?.type==="editDebt"&&<DebtModal data={modal.data} customers={customers} onSave={f=>updateDebt(modal.data.id,f)} onClose={closeModal}/>}
+  {modal?.type==="addPayment"&&<PaymentModal debt={modal.data} stats={stats[modal.data.id]} calcSplit={calcSplit} onSave={addPayment} onClose={closeModal}/>}
+  {modal?.type==="editPayment"&&<PaymentModal data={modal.data.payment} debt={modal.data.debt} stats={stats[modal.data.debt.id]} calcSplit={calcSplit} onSave={f=>updatePayment(modal.data.payment.id,f)} onClose={closeModal}/>}
+</div>
+```
+
+);
+}
+
+// ── ADD/EDIT CUSTOMER ────────────────────────────────────────
+function AddCustomerModal({data,onSave,onClose}){
+const [f,setF]=useState({name:data?.name||””,phone:data?.phone||””});
+function save(){if(!f.name.trim()){alert(“กรุณากรอกชื่อ”);return;}onSave(f);}
+return(
+<Modal title={data?“แก้ไขลูกค้า”:“เพิ่มลูกค้าใหม่”} onClose={onClose}>
+<Row label="ชื่อลูกค้า" required><input style={iStyle} value={f.name} placeholder=“สมชาย ใจดี” onChange={e=>setF(x=>({…x,name:e.target.value}))}/></Row>
+<Row label="เบอร์โทร"><input style={iStyle} value={f.phone} placeholder=“08x-xxx-xxxx” onChange={e=>setF(x=>({…x,phone:e.target.value}))}/></Row>
+<Btn full onClick={save}>{data?“บันทึกการแก้ไข”:“เพิ่มลูกค้า”}</Btn>
+</Modal>
+);
+}
+
+// ── ADD/EDIT DEBT ─────────────────────────────────────────────
+function DebtModal({data,customers,onSave,onClose}){
+const [f,setF]=useState({
+customerId:data?.customerId||””,
+creditType:data?.creditType||“bad_debt”,
+principalMom:data?.principalMom||””,
+principalUs:data?.principalUs||””,
+momProfitRatio:data?.momProfitRatio??0.5,
+creditPrice:data?.creditPrice||””,
+totalInstallments:data?.totalInstallments||””,
+startDate:data?.startDate||today(),
+note:data?.note||””
+});
+
+const totalPrincipal=(+f.principalMom||0)+(+f.principalUs||0);
+const totalProfit=(+f.creditPrice||0)-totalPrincipal;
+const momProfit=totalProfit*(+f.momProfitRatio||0);
+const usProfit=totalProfit*(1-(+f.momProfitRatio||0));
+
+function save(){
+const miss=[];
+if(!f.customerId)miss.push(“ลูกค้า”);
+if(!(+f.creditPrice>0))miss.push(“ยอดเครดิตรวม”);
+if(!(+f.totalInstallments>0))miss.push(“จำนวนงวด”);
+if(miss.length){alert(“กรุณากรอก: “+miss.join(”, “));return;}
+onSave({…f,momProfitRatio:+f.momProfitRatio});
+}
+
+return(
+<Modal title={data?“แก้ไขบัญชีเครดิต”:“เพิ่มบัญชีเครดิต”} onClose={onClose} wide>
+<Row label="ลูกค้า" required>
+<select style={iStyle} value={f.customerId} onChange={e=>setF(x=>({…x,customerId:e.target.value}))}>
+<option value="">– เลือกลูกค้า –</option>
+{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+</select>
+</Row>
+<Row label="ประเภทเครดิต" required>
+<select style={iStyle} value={f.creditType} onChange={e=>setF(x=>({…x,creditType:e.target.value}))}>
+{CREDIT_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
+</select>
+</Row>
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:8}}>
+<Row label="ทุนแม่ (฿)"><input type=“number” style={iStyle} value={f.principalMom} placeholder=“0” onChange={e=>setF(x=>({…x,principalMom:e.target.value}))}/></Row>
+<Row label="ทุนเรา (฿)"><input type=“number” style={iStyle} value={f.principalUs}  placeholder=“0” onChange={e=>setF(x=>({…x,principalUs:e.target.value}))}/></Row>
+</div>
+<Row label="ยอดเครดิตรวม (ที่ลูกค้าต้องจ่ายทั้งหมด)" required>
+<input type=“number” style={iStyle} value={f.creditPrice} placeholder=“เช่น 6500” onChange={e=>setF(x=>({…x,creditPrice:e.target.value}))}/>
+</Row>
+<Row label={`สัดส่วนกำไรแม่ (${Math.round((+f.momProfitRatio||0)*100)}%) : กำไรเรา (${Math.round((1-(+f.momProfitRatio||0))*100)}%)`}>
+<input type=“range” min=“0” max=“1” step=“0.05” value={f.momProfitRatio}
+onChange={e=>setF(x=>({…x,momProfitRatio:e.target.value}))}
+style={{width:“100%”,accentColor:”#8b5cf6”}}/>
+</Row>
+{+f.creditPrice>0&&totalPrincipal>0&&(
+<div style={{background:”#f8fafc”,borderRadius:10,padding:10,marginBottom:10,fontSize:12}}>
+<div style={{display:“grid”,gridTemplateColumns:“repeat(4,1fr)”,gap:5}}>
+<MCard label=“กำไรรวม” value={`฿${fmt(totalProfit)}`} color=”#f59e0b”/>
+<MCard label=“กำไรแม่” value={`฿${fmt(momProfit)}`}   color=”#8b5cf6”/>
+<MCard label=“กำไรเรา” value={`฿${fmt(usProfit)}`}    color=”#10b981”/>
+<MCard label=“รวมทุน”  value={`฿${fmt(totalPrincipal)}`} color=”#64748b”/>
+</div>
+</div>
+)}
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:8}}>
+<Row label="จำนวนงวด" required><input type=“number” style={iStyle} value={f.totalInstallments} placeholder=“เช่น 10” onChange={e=>setF(x=>({…x,totalInstallments:e.target.value}))}/></Row>
+<Row label="วันเริ่มต้น"><input type=“date” style={iStyle} value={f.startDate} onChange={e=>setF(x=>({…x,startDate:e.target.value}))}/></Row>
+</div>
+<Row label="หมายเหตุ"><input style={iStyle} value={f.note} placeholder=”(ไม่บังคับ)” onChange={e=>setF(x=>({…x,note:e.target.value}))}/></Row>
+<Btn full onClick={save}>{data?“บันทึกการแก้ไข”:“บันทึกบัญชี”}</Btn>
+</Modal>
+);
+}
+
+// ── ADD/EDIT PAYMENT ──────────────────────────────────────────
+function PaymentModal({data,debt,stats,calcSplit,onSave,onClose}){
+const [f,setF]=useState({
+debtId:debt.id,
+date:data?.date||today(),
+amount:data?.amount||””,
+note:data?.note||””
+});
+const sp=calcSplit(debt);
+const amt=+f.amount||0;
+
+function save(){
+if(!f.date||!(+f.amount>0)){alert(“กรุณากรอกวันที่และจำนวนเงิน”);return;}
+onSave(f);
+}
+
+return(
+<Modal title={data?“แก้ไขการชำระ”:“บันทึกรับเงิน”} onClose={onClose}>
+<div style={{background:”#f8fafc”,borderRadius:10,padding:10,marginBottom:12,fontSize:13}}>
+<div style={{fontWeight:800}}>{debt.note||“บัญชีเครดิต”}</div>
+<div style={{color:”#64748b”,marginTop:2}}>
+ค้างชำระ ฿{fmt(stats.remaining)} | งวดปกติ ฿{fmt(stats.installAmt)}
+</div>
+</div>
+<Row label="วันที่รับเงิน" required><input type=“date” style={iStyle} value={f.date} onChange={e=>setF(x=>({…x,date:e.target.value}))}/></Row>
+<Row label="จำนวนเงินที่รับ" required><input type=“number” style={iStyle} value={f.amount} placeholder=“เช่น 650” onChange={e=>setF(x=>({…x,amount:e.target.value}))}/></Row>
+{amt>0&&(
+<div style={{background:”#eff6ff”,border:“1px solid #bfdbfe”,borderRadius:9,padding:10,marginBottom:10}}>
+<div style={{fontSize:11,color:”#64748b”,marginBottom:6}}>การแยกยอด ฿{fmt(amt)}</div>
+<div style={{display:“grid”,gridTemplateColumns:“repeat(4,1fr)”,gap:5}}>
+<MCard label=“ทุนแม่คืน” value={`฿${fmt(amt*sp.momRatio)}`}        color=”#8b5cf6”/>
+<MCard label=“ทุนเราคืน” value={`฿${fmt(amt*sp.usRatio)}`}         color=”#3b82f6”/>
+<MCard label=“กำไรแม่”   value={`฿${fmt(amt*sp.momProfitRatio)}`}   color=”#a855f7”/>
+<MCard label=“กำไรเรา”   value={`฿${fmt(amt*sp.usProfitRatio)}`}    color=”#10b981”/>
+</div>
+</div>
+)}
+<Row label="หมายเหตุ"><input style={iStyle} value={f.note} placeholder=“เช่น โอนเศษ, จ่ายสด” onChange={e=>setF(x=>({…x,note:e.target.value}))}/></Row>
+<Btn full color="#10b981" onClick={save}>{data?“บันทึกการแก้ไข”:“บันทึกรับเงิน”}</Btn>
+</Modal>
+);
+}
+
+ReactDOM.createRoot(document.getElementById(“root”)).render(<App/>);
+</script>
+
+</body>
+</html>
